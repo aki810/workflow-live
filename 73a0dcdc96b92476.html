@@ -1,0 +1,80 @@
+<!doctype html><html lang="ja"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>業務フロー</title>
+<style>
+  html,body{margin:0;height:100%;font-family:-apple-system,"Helvetica Neue",sans-serif;background:#1a1a1a;color:#eee}
+  #gate{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:14px}
+  #gate input{font-size:16px;padding:10px 14px;border-radius:6px;border:1px solid #444;background:#222;color:#eee;width:240px}
+  #gate button{font-size:15px;padding:10px 22px;border-radius:6px;border:0;background:#1565c0;color:#fff;cursor:pointer}
+  #gate .err{color:#e57373;font-size:13px;min-height:16px}
+  #gate .title{font-size:15px;color:#aaa}
+  #view{display:none;flex-direction:column;height:100%}
+  #bar{font-size:11px;color:#888;padding:3px 12px;background:#111;border-bottom:1px solid #333;display:flex;gap:14px}
+  #frame{flex:1;border:0;width:100%;background:#fff}
+</style></head><body>
+<div id="gate">
+  <div class="title">🔒 業務フロー（パスワード保護）</div>
+  <input id="pw" type="password" placeholder="パスワード" autofocus>
+  <button id="go">表示</button>
+  <div class="err" id="err"></div>
+</div>
+<div id="view">
+  <div id="bar"><span>🔄 5分ごと自動更新</span><span id="upd"></span></div>
+  <iframe id="frame"></iframe>
+</div>
+<script type="application/json" id="payload">{"salt": "tIl4ohcui9DacgdS9YScbQ==", "iv": "IfMXczBrRWu2erLK", "ct": "ZaAGkeRcK+9+9Dm88+4JCYR2/fNdm57gzH0+gvASiBoRF3A/q7tgFX7aV2dP4S5KYt0G5cQdyWbls5YbuFXXPG8Qarec0VFXQfT247wk3WSjoemajmb+nii63wAyiDuwfCeK0lqd0XSe6VA3E1FVWKcrVx9iaoHokhrSA3tSibc7sa5kzQ9SraKHJdEjhVAfqS8zovKW2aXgxCnEJPgZQdNyrUeuXTDCACfpwQhpf7JwMbyqH3U8iqveBD1XvTTGj/htkvxbiYm3SVMpomqwqEhcGckyIELVVRbQhSXQEZe7NanAi9RqqjW49Ombi9rsP1eacb9nPtv26JZTG2UBrWXTRN6d3P0TXkDPbyBcm46cgWlHYBcTneEC8FNb", "iter": 200000}</script>
+<script>
+const RELOAD_MS = 180000;
+const $ = s => document.querySelector(s);
+const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+
+async function deriveKey(pw, salt, iter){
+  const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(pw), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey({name:'PBKDF2', salt, iterations:iter, hash:'SHA-256'},
+    base, {name:'AES-GCM', length:256}, false, ['decrypt']);
+}
+async function decryptPayload(pw, data){
+  const key = await deriveKey(pw, b64(data.salt), data.iter);
+  const pt = await crypto.subtle.decrypt({name:'AES-GCM', iv:b64(data.iv)}, key, b64(data.ct));
+  return new TextDecoder().decode(pt);
+}
+function currentPayload(){ return JSON.parse($('#payload').textContent); }
+
+async function show(pw){
+  const html = await decryptPayload(pw, currentPayload());  // 失敗時は例外
+  sessionStorage.setItem('wfpw', pw);
+  $('#gate').style.display = 'none';
+  $('#view').style.display = 'flex';
+  $('#frame').srcdoc = html;
+  $('#upd').textContent = '最終更新 ' + new Date().toLocaleTimeString('ja-JP');
+  scheduleRefresh();
+}
+let timer = null;
+function scheduleRefresh(){
+  clearTimeout(timer);
+  timer = setTimeout(refresh, RELOAD_MS);
+}
+async function refresh(){
+  const pw = sessionStorage.getItem('wfpw');
+  if(!pw){ return; }
+  try{
+    const res = await fetch(location.href, {cache:'no-store'});
+    const txt = await res.text();
+    const doc = new DOMParser().parseFromString(txt, 'text/html');
+    const data = JSON.parse(doc.querySelector('#payload').textContent);
+    const html = await decryptPayload(pw, data);
+    $('#frame').srcdoc = html;
+    $('#upd').textContent = '最終更新 ' + new Date().toLocaleTimeString('ja-JP');
+  }catch(e){ /* 失敗しても次回再試行 */ }
+  scheduleRefresh();
+}
+async function tryShow(pw){
+  try { await show(pw); $('#err').textContent=''; }
+  catch(e){ sessionStorage.removeItem('wfpw'); $('#err').textContent = 'パスワードが違います'; }
+}
+$('#go').onclick = () => tryShow($('#pw').value);
+$('#pw').addEventListener('keydown', e => { if(e.key==='Enter') tryShow($('#pw').value); });
+// 既に同セッションで認証済みなら自動表示
+const saved = sessionStorage.getItem('wfpw');
+if(saved){ tryShow(saved); }
+</script></body></html>
